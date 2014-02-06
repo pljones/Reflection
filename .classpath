@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<classpath>
+	<classpathentry kind="src" path="src/scala"/>
+	<classpathentry kind="src" path="src/java"/>
+	<classpathentry kind="con" path="org.scala-ide.sdt.launching.SCALA_CONTAINER"/>
+	<classpathentry kind="con" path="org.eclipse.jdt.launching.JRE_CONTAINER"/>
+	<classpathentry exported="true" kind="lib" path="D:/Program Files/eclipse/plugins/org.scala-lang.scala-compiler_2.10.3.v20130923-060037-VFINAL-e2fec6b28d.jar"/>
+	<classpathentry kind="output" path="bin"/>
+</classpath>

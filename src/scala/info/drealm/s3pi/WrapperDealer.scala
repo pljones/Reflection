@@ -70,7 +70,7 @@ object WrapperDealer {
     // Right, now we need to tell Scala we've got a bunch of stuff:
     val cl = ScalaClassLoader
         .fromURLs(for (
-            file <- classFiles ++ jarFiles
+            file <- Set(classFiles.map(x => x.getParentFile): _*).toSeq ++ jarFiles
         ) yield file.toURI().toURL())
 
     // And get a runtime mirror to look up symbols
@@ -79,31 +79,36 @@ object WrapperDealer {
     // And there is still no nice way to say "here is a string, give me the type".
     // This assumes everything is a Class (it said ".class" on the end, after all)
     // and then filters out the failures.
-    val allClasses = (for (
+    val allClasses = List((for (
         name <- classNames ++ jarClasses;
         opt = try {
             Some(rm.classSymbol(Class.forName(name)))
         } catch {
             case ex: Throwable => None
         } if (opt match { case Some(_) => true; case _ => false })
-    ) yield opt.get)
+    ) yield opt.get): _*)
 
     // This is the symbol we are looking for
     val sims3ResourceHandler = ru.typeOf[Sims3ResourceHandler].typeSymbol
 
     // Filter out everything but what we want
-    val wantedClasses = for (
+    val handlers = for (
         clazz <- allClasses;
         if !clazz.isTrait;
         if clazz.typeSignature.baseClasses.contains(sims3ResourceHandler)
-    ) yield rm.reflectModule(clazz.owner.typeSignature.member(clazz.name.toTermName).asModule)
+    ) yield companion[Any](rm
+        .reflectModule(clazz
+            .owner
+            .typeSignature
+            .member(clazz
+                .name
+                .toTermName)
+            .asModule)
+        .symbol
+        .fullName).asInstanceOf[Sims3ResourceHandler]
 
-    println("")
-    private val wrappers = List[WrapperId]()
-    wantedClasses.foreach(mm => {
-        val i = mm.instance.asInstanceOf[Sims3ResourceHandler]
-        println(i)
-    })
+    private val wrappers = for (handler <- handlers; resType <- handler.supportedResourceTypes)
+        yield new WrapperId(resType, handler)
 
     /*
 	 * http://stackoverflow.com/questions/8867766/scala-dynamic-object-class-loading
@@ -112,10 +117,6 @@ object WrapperDealer {
     private[this] def companion[T](name: String)(implicit tag: reflect.ClassTag[T]): T =
         Class.forName(name + "$").getField("MODULE$").get(tag.runtimeClass).asInstanceOf[T]
 
-    
-    
-    
-    
     private[this] def getSims3ResourceHandlerFor(resourceType: ResourceType): Sims3ResourceHandler = {
         wrappers.find(w => w.resourceType == resourceType) match {
             case Some(x) => x.sims3ResourceHandler

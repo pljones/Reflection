@@ -1,128 +1,8 @@
 package info.drealm.s3pi
 
-import scala.tools.nsc.util.ScalaClassLoader
 import scala.reflect.runtime.{ universe => ru }
-import info.drealm.s3pi._
 
 object WrapperDealer {
-    private[this] class WrapperId(
-        val resourceType: ResourceType,
-        val sims3ResourceHandler: Sims3ResourceHandler)
-
-    //TODO: Load list of file names to skip
-    //TODO: Allow class path to be configured
-    //TODO: Load list of class names to skip
-
-    private[this] def recursiveListFiles(path: java.io.File): Array[java.io.File] = {
-        val (files, directories) = path.listFiles partition (!_.isDirectory)
-        files ++ directories.flatMap(recursiveListFiles)
-    }
-
-    private[this] def fromJarPath(path: java.io.File): Array[String] = {
-        import collection.JavaConverters._
-        (for (
-            entry <- (new java.util.zip.ZipFile(path)).entries.asScala
-        ) yield entry.getName).toArray
-    }
-
-    val root = new java.io.File("bin")
-    val rootPath = root.getCanonicalPath()
-    val files = recursiveListFiles(root)
-
-    val classFiles = files
-        .filter(_.getName.toLowerCase.endsWith(".class"))
-
-    val jarFiles = files
-        .filter(_.getName.toLowerCase.endsWith(".jar"))
-
-    // ===============================================================
-    //
-    // It appears that JVM supports no way of querying a jar or class
-    // to determine its content, unlike .NET
-    // So unless you already know the complete list of classes,
-    // you cannot load them at runtime (thus making runtime loading
-    // fairly pointless, as you know the complete list of classes
-    // at compile time).
-    // This hackiness works around the problem by searching out
-    // classes by filename...
-    //
-    // ===============================================================
-
-    // Scala will not tell us what classes exist in a classpath, so we have to go looking
-    // Class files are easy...ish.
-    val rootlen = root.getCanonicalPath().length + 1
-    val classNames = classFiles
-        .map(_.getCanonicalPath())
-        .map(_.substring(rootlen))
-        .map(x => x.substring(0, x.length() - 6))
-        .map(_.replace('/', '.'))
-        .map(_.replace('\\', '.'))
-
-    // JAR files are a little trickier
-    val jarClasses = (for (
-        jar <- jarFiles;
-        resource <- fromJarPath(jar) if resource.toLowerCase.endsWith(".class")
-    ) yield resource)
-        .map(x => x.substring(0, x.length() - 6)) // no idea if front needs trimming
-        .map(_.replace('/', '.'))
-        .map(_.replace('\\', '.'))
-
-    // Right, now we need to tell Scala we've got a bunch of stuff:
-    val cl = ScalaClassLoader
-        .fromURLs(for (
-            file <- Set(classFiles.map(x => x.getParentFile): _*).toSeq ++ jarFiles
-        ) yield file.toURI().toURL())
-
-    // And get a runtime mirror to look up symbols
-    val rm = ru.runtimeMirror(cl)
-
-    // And there is still no nice way to say "here is a string, give me the type".
-    // This assumes everything is a Class (it said ".class" on the end, after all)
-    // and then filters out the failures.
-    val allClasses = List((for (
-        name <- classNames ++ jarClasses;
-        opt = try {
-            Some(rm.classSymbol(Class.forName(name)))
-        } catch {
-            case ex: Throwable => None
-        } if (opt match { case Some(_) => true; case _ => false })
-    ) yield opt.get): _*)
-
-    // This is the symbol we are looking for
-    val sims3ResourceHandler = ru.typeOf[Sims3ResourceHandler].typeSymbol
-
-    // Filter out everything but what we want
-    val handlers = for (
-        clazz <- allClasses;
-        if !clazz.isTrait;
-        if clazz.typeSignature.baseClasses.contains(sims3ResourceHandler)
-    ) yield companion[Any](rm
-        .reflectModule(clazz
-            .owner
-            .typeSignature
-            .member(clazz
-                .name
-                .toTermName)
-            .asModule)
-        .symbol
-        .fullName).asInstanceOf[Sims3ResourceHandler]
-
-    private val wrappers = for (handler <- handlers; resType <- handler.supportedResourceTypes)
-        yield new WrapperId(resType, handler)
-
-    /*
-	 * http://stackoverflow.com/questions/8867766/scala-dynamic-object-class-loading
-	 * This gets the *companion object* for the named class
-	 */
-    private[this] def companion[T](name: String)(implicit tag: reflect.ClassTag[T]): T =
-        Class.forName(name + "$").getField("MODULE$").get(tag.runtimeClass).asInstanceOf[T]
-
-    private[this] def getSims3ResourceHandlerFor(resourceType: ResourceType): Sims3ResourceHandler = {
-        wrappers.find(w => w.resourceType == resourceType) match {
-            case Some(x) => x.sims3ResourceHandler
-            case None => info.drealm.s3pi.defaultWrapper.DefaultSims3ResourceHandler
-        }
-    }
 
     def createNewResource(resourceType: ResourceType): Sims3Resource = {
         getSims3ResourceHandlerFor(resourceType)(resourceType)
@@ -135,9 +15,107 @@ object WrapperDealer {
         getResource(pkg, resourceIdentifier, true)
     }
 
-    private def getResource(pkg: Sims3Package, resourceIdentifier: ResourceIdentifier, isBare: Boolean): Sims3Resource = {
-        (if (isBare) info.drealm.s3pi.defaultWrapper.DefaultSims3ResourceHandler
-        else getSims3ResourceHandlerFor(resourceIdentifier.resourceType))(pkg, resourceIdentifier)
+    // === I == M == P == L == E == M == N == T == A == T == I == O == N ===
+
+    private[this] class WrapperId(
+        val resourceType: ResourceType,
+        val sims3ResourceHandler: Sims3ResourceHandler)
+
+    private[this] def getSims3ResourceHandlerFor(resourceType: ResourceType): Sims3ResourceHandler = {
+        wrappers.find(w => w.resourceType == resourceType) match {
+            case Some(x) => x.sims3ResourceHandler
+            case None => info.drealm.s3pi.defaultWrapper.DefaultSims3ResourceHandler
+        }
+    }
+
+    private[this] def getResource(pkg: Sims3Package, resourceIdentifier: ResourceIdentifier, isBare: Boolean): Sims3Resource = {
+        val h =
+            if (isBare)
+                info.drealm.s3pi.defaultWrapper.DefaultSims3ResourceHandler
+            else
+                getSims3ResourceHandlerFor(resourceIdentifier.resourceType)
+        h(pkg, resourceIdentifier)
+    }
+
+    // === C == O == N == S == T == R == U == C == T == O == R ===
+
+    private val (places, names) = getClassPaths("Wrappers", "bin") // TODO: Configurable runtime class path
+
+    // Now we need to tell the runtime where to look
+    private val cl = new java.net.URLClassLoader(places)
+
+    // And get a runtime mirror to look up symbols
+    private val rm = ru.runtimeMirror(cl)
+
+    // Look up every name we found (ignoring anything that won't load)
+    private val allClasses = List((for (
+        name <- names;
+        opt = try { Some(rm.classSymbol(cl.loadClass(name))) } catch { case ex: Throwable => None };
+        if (opt match { case Some(_) => true; case _ => false })
+    ) yield opt.get): _*)
+
+    // This is the symbol we are looking for
+    private val sims3ResourceHandler = ru.typeOf[Sims3ResourceHandler].typeSymbol
+
+    // Look for needles in the haystack
+    private val handlers = for (
+        clazz <- allClasses;
+        if !clazz.isTrait && clazz.typeSignature.baseClasses.contains(sims3ResourceHandler)
+    ) yield {
+        // The next line does magic I do not comprehend - and I forget where I read it...
+        val classSymbol = clazz.owner.typeSignature.member(clazz.name.toTermName)
+        val mm = rm.reflectModule(classSymbol.asModule)
+        mm.instance.asInstanceOf[Sims3ResourceHandler]
+    }
+
+    // Finally, set up the wrapper registry
+    private val wrappers = for (handler <- handlers; resType <- handler.supportedResourceTypes)
+        yield new WrapperId(resType, handler)
+
+    // === I == M == P == L == E == M == N == T == A == T == I == O == N ===
+
+    private[this] def getClassPaths(paths: String*): Tuple2[Array[java.net.URL], Seq[String]] = {
+        def recursiveListFiles(path: java.io.File): Array[java.io.File] = {
+            val (files, directories) = path.listFiles partition (!_.isDirectory)
+            files ++ directories.flatMap(recursiveListFiles)
+        }
+        def fromJarPath(path: java.io.File): Array[String] = {
+            import collection.JavaConverters._
+            (for (
+                entry <- (new java.util.zip.ZipFile(path)).entries.asScala
+            ) yield entry.getName).toArray
+        }
+
+        // Get all the interesting files in each path
+        val (classFiles, jarFiles) = List((for (
+            path <- paths;
+            file <- recursiveListFiles(new java.io.File(path)).toList;
+            lname = file.getName.toLowerCase;
+            if (lname.endsWith(".class") || lname.endsWith(".jar"))
+        ) yield (lname.endsWith(".class"), path, file.getCanonicalFile)): _*) partition (x => x._1)
+
+        // Places represents the new classpath locations -- should match the "paths" passed in but cleaned up
+        val places = Set((for (file <- classFiles ::: jarFiles) yield new java.io.File(file._2)).map(_.toURI.toURL): _*).toSeq
+        // Names represents all the classes
+        val names = Seq[String]()
+
+        val classNames = (for (
+            t <- classFiles;
+            path = new java.io.File(t._2).getCanonicalPath;
+            afterPath = path.length + 1;
+            file = t._3
+        ) yield {
+            file.getCanonicalPath().substring(afterPath).replace('/', '.').replace('\\', '.')
+        }).map(x => x.substring(0, x.length() - 6))
+
+        val jarClasses = (for (
+            t <- jarFiles;
+            jar = t._3;
+            resource <- fromJarPath(jar) if resource.toLowerCase.endsWith(".class")
+        ) yield resource.replace('/', '.').replace('\\', '.'))
+            .map(x => x.substring(0, x.length() - 6)) // no idea if front needs trimming
+
+        (places.toArray, classNames ::: jarClasses)
     }
 
 }
